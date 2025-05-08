@@ -1,0 +1,393 @@
+#:import get_color_from_hex kivy.utils.get_color_from_hex
+#:import md_icons kivymd.icon_definitions.md_icons
+#:import FadeTransition kivy.uix.screenmanager.FadeTransition
+#:import dp kivy.metrics.dp
+#:import THEME_COLORS config.THEME_COLORS
+
+<StyledCard@MDCard>:
+    md_bg_color: THEME_COLORS['card_background']
+    ripple_color: app.theme_cls.primary_color
+    radius: [dp(10)]
+    elevation: 3
+
+<BaseScreen>:
+    canvas.before:
+        Color:
+            rgba: THEME_COLORS['background']
+        Rectangle:
+            pos: self.pos
+            size: self.size
+
+<LoginScreen>:
+    MDBoxLayout:
+        orientation: 'vertical'
+        padding: dp(20)
+        spacing: dp(20)
+        
+        Widget:
+            size_hint_y: 0.1
+            
+        MDBoxLayout:
+            orientation: 'vertical'
+            spacing: dp(10)
+            size_hint_y: 0.4
+            pos_hint: {'center_x': 0.5, 'center_y': 0.5}
+            
+            MDLabel:
+                text: 'SAMEs'
+                halign: 'center'
+                font_style: 'H3'
+                theme_text_color: "Primary"
+                
+            MDLabel:
+                text: 'Système d’Alerte de Maintenance par l’Employé'
+                halign: 'center'
+                theme_text_color: "Secondary"
+                font_style: 'Body2'
+        
+        StyledCard:
+            orientation: 'vertical'
+            padding: dp(20)
+            spacing: dp(20)
+            size_hint: 0.9, None
+            height: self.minimum_height
+            pos_hint: {'center_x': 0.5}
+            
+            MDTextField:
+                id: matricule
+                hint_text: "Matricule"
+                helper_text: "Entrez votre matricule"
+                helper_text_mode: "on_error"
+                size_hint_x: 1
+                font_size: '18sp'
+                on_text: root.check_matricule()
+                
+            MDTextField:
+                id: password
+                hint_text: "Mot de passe"
+                helper_text: "Entrez votre mot de passe"
+                helper_text_mode: "on_error"
+                password: True
+                size_hint_x: 1
+                font_size: '18sp'
+                
+            MDFillRoundFlatButton:
+                text: "Se connecter"
+                size_hint_x: 1
+                font_size: '18sp'
+                on_release: root.verify_login()
+                
+            MDFlatButton:
+                id: forgot_password
+                text: "Mot de passe oublié ?"
+                theme_text_color: "Primary"
+                size_hint_x: 1
+                font_size: '14sp'
+                on_release: root.request_password_reset()
+
+<ResetPasswordScreen>:
+    MDBoxLayout:
+        orientation: 'vertical'
+        padding: dp(20)
+        spacing: dp(20)
+        
+        MDTopAppBar:
+            title: "Réinitialiser le mot de passe"
+            left_action_items: [["arrow-left", lambda x: setattr(app.root, 'current', 'login')]]
+            elevation: 2
+            
+        StyledCard:
+            orientation: 'vertical'
+            padding: dp(20)
+            spacing: dp(20)
+            size_hint: 0.9, None
+            height: self.minimum_height
+            pos_hint: {'center_x': 0.5}
+            
+            MDTextField:
+                id: matricule
+                hint_text: "Matricule"
+                helper_text: "Entrez votre matricule"
+                helper_text_mode: "on_error"
+                size_hint_x: 1
+                font_size: '18sp'
+                
+            MDTextField:
+                id: code
+                hint_text: "Code de réinitialisation"
+                helper_text: "Entrez le code reçu"
+                helper_text_mode: "on_error"
+                size_hint_x: 1
+                font_size: '18sp'
+                
+            MDTextField:
+                id: new_password
+                hint_text: "Nouveau mot de passe"
+                helper_text: "Entrez un nouveau mot de passe"
+                helper_text_mode: "on_error"
+                password: True
+                size_hint_x: 1
+                font_size: '18sp'
+                
+            MDFillRoundFlatButton:
+                text: "Réinitialiser"
+                size_hint_x: 1
+                font_size: '18sp'
+                on_release: root.reset_password()
+
+<EmployeeCameraScreen>:
+    MDBoxLayout:
+        orientation: 'vertical'
+        spacing: dp(10)
+        
+        MDTopAppBar:
+            title: "Capture d'anomalie"
+            right_action_items: [["theme-light-dark", lambda x: app.toggle_theme()], ["logout", lambda x: app.logout()]]
+            elevation: 2
+            
+        MDBoxLayout:
+            orientation: 'vertical'
+            padding: dp(20)
+            spacing: dp(20)
+            
+            StyledCard:
+                id: camera_layout
+                size_hint_y: 0.7
+                radius: [dp(10)]
+                elevation: 3
+            
+            MDFillRoundFlatIconButton:
+                text: "Prendre une photo"
+                icon: "camera"
+                font_size: '18sp'
+                size_hint_x: 0.8
+                pos_hint: {'center_x': 0.5}
+                on_release: root.capture_photo()
+
+<AlertTypeScreen>:
+    MDBoxLayout:
+        orientation: 'vertical'
+        spacing: dp(10)
+        
+        MDTopAppBar:
+            title: "Type d'anomalie"
+            left_action_items: [["arrow-left", lambda x: setattr(app.root, 'current', 'employee_camera')]]
+            right_action_items: [["theme-light-dark", lambda x: app.toggle_theme()], ["logout", lambda x: app.logout()]]
+            elevation: 2
+            
+        ScrollView:
+            do_scroll_x: False
+            
+            MDGridLayout:
+                id: type_grid
+                cols: 2
+                padding: dp(20)
+                spacing: dp(20)
+                size_hint_y: None
+                height: self.minimum_height
+
+<AlertDescriptionScreen>:
+    MDBoxLayout:
+        orientation: 'vertical'
+        spacing: dp(10)
+        
+        MDTopAppBar:
+            title: "Description de l'alerte"
+            left_action_items: [["arrow-left", lambda x: setattr(app.root, 'current', 'alert_type')]]
+            right_action_items: [["theme-light-dark", lambda x: app.toggle_theme()], ["logout", lambda x: app.logout()]]
+            elevation: 2
+            
+        MDBoxLayout:
+            orientation: 'vertical'
+            padding: dp(20)
+            spacing: dp(20)
+            
+            StyledCard:
+                orientation: 'vertical'
+                padding: dp(20)
+                spacing: dp(10)
+                size_hint: 0.9, None
+                height: self.minimum_height
+                pos_hint: {'center_x': 0.5}
+                
+                MDTextField:
+                    id: description
+                    hint_text: "Description (optionnel)"
+                    multiline: True
+                    size_hint: 1, None
+                    height: dp(100)
+                
+                MDFillRoundFlatIconButton:
+                    text: "Envoyer l'alerte"
+                    icon: "send"
+                    size_hint_x: 0.8
+                    pos_hint: {'center_x': 0.5}
+                    on_release: root.submit_alert()
+
+<AlertStatusScreen>:
+    MDBoxLayout:
+        orientation: 'vertical'
+        spacing: dp(10)
+        
+        MDTopAppBar:
+            title: "Statut de l'alerte"
+            right_action_items: [["history", lambda x: setattr(app.root, 'current', 'alert_history')], ["theme-light-dark", lambda x: app.toggle_theme()], ["logout", lambda x: app.logout()]]
+            elevation: 2
+            
+        MDBoxLayout:
+            orientation: 'vertical'
+            padding: dp(20)
+            spacing: dp(20)
+            
+            StyledCard:
+                orientation: 'vertical'
+                padding: dp(20)
+                spacing: dp(10)
+                size_hint: 0.9, None
+                height: self.minimum_height
+                pos_hint: {'center_x': 0.5}
+                
+                MDIcon:
+                    id: status_icon
+                    icon: 'clock-outline'
+                    font_size: dp(64)
+                    halign: 'center'
+                    theme_text_color: "Custom"
+                    text_color: 1, 0.8, 0, 1
+                    
+                MDLabel:
+                    id: status_label
+                    text: "Statut: En attente"
+                    halign: 'center'
+                    font_style: 'H5'
+                    theme_text_color: "Primary"
+
+<AlertHistoryScreen>:
+    MDBoxLayout:
+        orientation: 'vertical'
+        spacing: dp(10)
+        
+        MDTopAppBar:
+            title: "Historique des alertes"
+            left_action_items: [["arrow-left", lambda x: setattr(app.root, 'current', 'alert_status' if app.current_user['role'] == 'employee' else 'technician_dashboard')]]
+            right_action_items: [["filter", lambda x: root.show_filter_menu()], ["theme-light-dark", lambda x: app.toggle_theme()], ["logout", lambda x: app.logout()]]
+            elevation: 2
+            
+        MDBoxLayout:
+            orientation: 'horizontal'
+            padding: dp(20)
+            spacing: dp(10)
+            size_hint_y: None
+            height: dp(48)
+            
+            MDTextField:
+                id: filter_type
+                hint_text: "Filtrer par type"
+                size_hint_x: 0.5
+                font_size: '14sp'
+                on_text_validate: root.apply_filters()
+                
+            MDFillRoundFlatIconButton:
+                text: "Trier par"
+                icon: "sort"
+                size_hint_x: 0.5
+                font_size: '14sp'
+                on_release: root.show_sort_menu()
+            
+        ScrollView:
+            do_scroll_x: False
+            
+            MDGridLayout:
+                id: history_grid
+                cols: 1
+                padding: dp(20)
+                spacing: dp(20)
+                size_hint_y: None
+                height: self.minimum_height
+
+<TechnicianDashboardScreen>:
+    MDBoxLayout:
+        orientation: 'vertical'
+        spacing: dp(10)
+        
+        MDTopAppBar:
+            title: "Tableau de bord technicien"
+            right_action_items: [["history", lambda x: setattr(app.root, 'current', 'alert_history')], ["filter", lambda x: root.show_filter_menu()], ["theme-light-dark", lambda x: app.toggle_theme()], ["logout", lambda x: app.logout()]]
+            elevation: 2
+            
+        MDBoxLayout:
+            orientation: 'horizontal'
+            padding: dp(20)
+            spacing: dp(10)
+            size_hint_y: None
+            height: dp(45)
+            
+            MDTextField:
+                id: filter_type
+                hint_text: "Filtrer par type"
+                size_hint_x: 0.5
+                font_size: '14sp'
+                on_text_validate: root.apply_filters()
+                
+            MDFillRoundFlatIconButton:
+                text: "Trier par"
+                icon: "sort"
+                size_hint_x: 0.5
+                font_size: '14sp'
+                on_release: root.show_sort_menu()
+            
+        ScrollView:
+            do_scroll_x: False
+            
+            MDGridLayout:
+                id: alerts_grid
+                cols: 1
+                padding: dp(20)
+                spacing: dp(20)
+                size_hint_y: None
+                height: self.minimum_height
+                adaptive_height: True
+
+<AdminDashboardScreen>:
+    MDBoxLayout:
+        orientation: 'vertical'
+        spacing: dp(10)
+        
+        MDTopAppBar:
+            title: "Tableau de bord admin"
+            right_action_items: [["theme-light-dark", lambda x: app.toggle_theme()], ["logout", lambda x: app.logout()]]
+            elevation: 2
+            
+        ScrollView:
+            do_scroll_x: False
+            
+            MDGridLayout:
+                id: users_grid
+                cols: 1
+                padding: dp(20)
+                spacing: dp(20)
+                size_hint_y: None
+                height: self.minimum_height
+
+ScreenManager:
+    id: screen_manager
+    transition: FadeTransition(duration=0.25)
+    
+    LoginScreen:
+        name: 'login'
+    ResetPasswordScreen:
+        name: 'reset_password'
+    EmployeeCameraScreen:
+        name: 'employee_camera'
+    AlertTypeScreen:
+        name: 'alert_type'
+    AlertDescriptionScreen:
+        name: 'alert_description'
+    AlertStatusScreen:
+        name: 'alert_status'
+    AlertHistoryScreen:
+        name: 'alert_history'
+    TechnicianDashboardScreen:
+        name: 'technician_dashboard'
+    AdminDashboardScreen:
+        name: 'admin_dashboard'

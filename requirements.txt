@@ -1,0 +1,9 @@
+kivymd==1.1.1
+kivy==2.2.1
+pillow==10.4.0
+requests==2.31.0
+python-dotenv==1.0.1
+plyer==2.1.0
+opencv-python==4.10.0.84
+passlib[bcrypt]==1.7.4
+reportlab==4.0.4
