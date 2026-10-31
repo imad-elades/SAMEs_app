@@ -1,84 +1,95 @@
-import sqlite3
 import os
-from PIL import Image
+import sqlite3
+from pathlib import Path
 from passlib.hash import bcrypt
 
-DB_PATH = 'sames.db'
+DB_PATH = Path(__file__).parent / 'sames.db'
+ASSETS_DIR = Path(__file__).parent / 'assets'
+ICONS_DIR = Path(__file__).parent / 'icons'
 
 def init_db():
-    # Check if database already exists
-    if os.path.exists(DB_PATH):
-        return  # Skip initialization to preserve existing data
+    # Créer le dossier assets s'il n'existe pas
+    ASSETS_DIR.mkdir(exist_ok=True)
+    # Créer le dossier icons s'il n'existe pas
+    ICONS_DIR.mkdir(exist_ok=True)
     
-    os.makedirs('icons', exist_ok=True)
-    
+    # Connexion à la base de données
     with sqlite3.connect(DB_PATH) as conn:
-        c = conn.cursor()
+        cursor = conn.cursor()
         
-        c.execute('''CREATE TABLE IF NOT EXISTS users (
-            matricule TEXT PRIMARY KEY,
-            password TEXT,
-            role TEXT NOT NULL CHECK(role IN ('employee', 'technician', 'admin'))
-        )''')
+        # Réinitialiser les tables pour reprendre la nouvelle structure
+        cursor.execute("DROP TABLE IF EXISTS alerts")
+        cursor.execute("DROP TABLE IF EXISTS anomaly_types")
+        cursor.execute("DROP TABLE IF EXISTS users")
         
-        c.execute('''CREATE TABLE IF NOT EXISTS anomaly_types (
-            name TEXT PRIMARY KEY,
-            description TEXT,
-            icon_name TEXT
-        )''')
+        # Création de la table users
+        cursor.execute('''
+            CREATE TABLE users (
+                matricule TEXT PRIMARY KEY,
+                password TEXT,
+                role TEXT CHECK(role IN ('employee','technician'))
+            )
+        ''')
         
-        c.execute('''CREATE TABLE IF NOT EXISTS alerts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_matricule TEXT,
-            photo_path TEXT,
-            alert_type TEXT,
-            description TEXT,
-            send_date DATETIME,
-            validation_date DATETIME,
-            status TEXT CHECK(status IN ('En attente', 'Validé', 'Rejeté')),
-            comment TEXT,
-            technician_id TEXT,
-            FOREIGN KEY(user_matricule) REFERENCES users(matricule),
-            FOREIGN KEY(alert_type) REFERENCES anomaly_types(name),
-            FOREIGN KEY(technician_id) REFERENCES users(matricule)
-        )''')
+        # Création de la table alerts
+        cursor.execute('''
+            CREATE TABLE alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_matricule TEXT,
+                photo_path TEXT,
+                alert_type TEXT,
+                send_date DATETIME,
+                validation_date DATETIME NULL,
+                status TEXT,
+                comment TEXT,
+                technician_id TEXT NULL,
+                FOREIGN KEY (user_matricule) REFERENCES users (matricule)
+            )
+        ''')
         
-        c.execute('''CREATE TABLE IF NOT EXISTS reset_codes (
-            matricule TEXT,
-            code TEXT NOT NULL,
-            expiry_date DATETIME NOT NULL,
-            PRIMARY KEY(matricule),
-            FOREIGN KEY(matricule) REFERENCES users(matricule)
-        )''')
-        
-        # Données de test
+        # Liste des types d'anomalies
         anomaly_types = [
-            ('Bruit', 'Bruit anormal dans la machine', 'bruit.png'),
-            ('Fuite', 'Fuite de liquide ou de gaz', 'fuite.png'),
-            ('Vibration', 'Vibration excessive', 'vibration.png'),
-            ('Surchauffe', 'Température anormale', 'surchauffe.png')
+            'Bruit',
+            'Vibration',
+            'Chaleur',
+            'Fuite',
+            'Odeur',
+            'Coupure',
+            'Usure',
+            'Déformation',
+            'Autre'
         ]
         
-        for name, description, icon_name in anomaly_types:
-            c.execute('''INSERT OR IGNORE INTO anomaly_types (name, description, icon_name) 
-                        VALUES (?, ?, ?)''', (name, description, icon_name))
-            icon_path = os.path.join('icons', icon_name)
-            if not os.path.exists(icon_path):
-                img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
-                img.save(icon_path)
+        # Création de la table anomaly_types
+        cursor.execute('''
+            CREATE TABLE anomaly_types (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE,
+                description TEXT,
+                image_path TEXT
+            )
+        ''')
         
-        users = [
-            ('EMP001', None, 'employee'),  # No password for employees
-            ('EMP002', None, 'employee'),
-            ('TECH001', bcrypt.hash('tech123'), 'technician'),
-            ('TECH002', bcrypt.hash('tech123'), 'technician'),
-            ('ADMIN001', bcrypt.hash('admin123'), 'admin')
-        ]
+        # Insertion des types d'anomalies
+        for anomaly_type in anomaly_types:
+            cursor.execute('''
+                INSERT OR IGNORE INTO anomaly_types (name, description, image_path)
+                VALUES (?, ?, ?)
+            ''', (anomaly_type, f"Description de {anomaly_type}", f"icons/{anomaly_type.lower()}.png"))
         
-        for matricule, password, role in users:
-            c.execute('''INSERT OR IGNORE INTO users (matricule, password, role) 
-                        VALUES (?, ?, ?)''', (matricule, password, role))
+        # Insertion des utilisateurs de test si la table est vide
+        cursor.execute('SELECT COUNT(*) FROM users')
+        if cursor.fetchone()[0] == 0:
+            # Ajouter quelques utilisateurs de test
+            users = [
+                ('EMP001', None, 'employee'),
+                ('EMP002', None, 'employee'),
+                ('TECH001', bcrypt.hash('tech123'), 'technician'),
+                ('TECH002', bcrypt.hash('tech456'), 'technician')
+            ]
+            cursor.executemany('INSERT OR IGNORE INTO users (matricule, password, role) VALUES (?, ?, ?)', users)
         
+        # Valider les changements
         conn.commit()
 
 if __name__ == '__main__':

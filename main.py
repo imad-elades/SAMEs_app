@@ -1,13 +1,11 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 import sqlite3
-import random
-import string
 from passlib.hash import bcrypt
 from init_db import init_db, DB_PATH
 import os
 import cv2
 from kivy.graphics.texture import Texture
-from kivy.uix.image import Image
+from kivy.uix.image import Image, AsyncImage
 from kivy.clock import Clock
 from kivy.core.window import Window
 from kivy.metrics import dp
@@ -18,168 +16,150 @@ from kivymd.uix.card import MDCard
 from kivymd.uix.button import MDRaisedButton, MDFillRoundFlatIconButton, MDFlatButton, MDIconButton
 from kivymd.uix.boxlayout import MDBoxLayout
 from kivymd.uix.label import MDLabel
+from kivymd.icon_definitions import md_icons
 from kivymd.uix.screen import MDScreen
 from kivymd.uix.dialog import MDDialog
-from kivymd.uix.list import OneLineIconListItem
+from kivymd.uix.list import MDList, OneLineIconListItem
 from kivymd.uix.snackbar import Snackbar
 from kivymd.uix.textfield import MDTextField
-from kivymd.uix.menu import MDDropdownMenu
-from config import STATUS_CONFIG, THEME_COLORS
-from plyer import notification
+import re
+import logging
+
+# Configuration du logging
+logging.basicConfig(
+    filename='sames.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+class Logger:
+    @staticmethod
+    def log_action(user_matricule, action, details=None):
+        """Journalise une action utilisateur"""
+        message = f"User {user_matricule}: {action}"
+        if details:
+            message += f" - {details}"
+        logging.info(message)
+
+# init_db importé depuis init_db.py
+
+class InputValidator:
+    @staticmethod
+    def validate_matricule(matricule):
+        """Valide le format du matricule"""
+        if not matricule:
+            return False, "Le matricule ne peut pas être vide"
+        if not re.match(r'^[A-Z0-9]{4,10}$', matricule):
+            return False, "Le matricule doit contenir entre 4 et 10 caractères alphanumériques"
+        return True, ""
+
+    @staticmethod
+    def validate_password(password):
+        """Valide le format du mot de passe"""
+        if not password:
+            return False, "Le mot de passe ne peut pas être vide"
+        if len(password) < 8:
+            return False, "Le mot de passe doit contenir au moins 8 caractères"
+        if not re.search(r'[A-Z]', password):
+            return False, "Le mot de passe doit contenir au moins une majuscule"
+        if not re.search(r'[a-z]', password):
+            return False, "Le mot de passe doit contenir au moins une minuscule"
+        if not re.search(r'[0-9]', password):
+            return False, "Le mot de passe doit contenir au moins un chiffre"
+        return True, ""
+
+class NotificationManager:
+    @staticmethod
+    def show_notification(text, duration=3):
+        """Affiche une notification à l'utilisateur"""
+        snackbar = Snackbar(
+            text=text,
+            duration=duration,
+            bg_color=get_color_from_hex('#4CAF50'),
+            text_color=get_color_from_hex('#FFFFFF')
+        )
+        snackbar.open()
 
 class BaseScreen(MDScreen):
+    """Classe de base avec des méthodes communes"""
     def show_error_dialog(self, text):
         dialog = MDDialog(
             title="Erreur",
             text=text,
-            buttons=[MDFlatButton(text="OK", on_release=lambda x: dialog.dismiss())]
+            buttons=[
+                MDFlatButton(
+                    text="OK",
+                    on_release=lambda x: dialog.dismiss()
+                )
+            ]
         )
         dialog.open()
+        
+    def show_success_notification(self, text):
+        """Affiche une notification de succès"""
+        NotificationManager.show_notification(text)
 
 class LoginScreen(BaseScreen):
-    def check_matricule(self):
-        matricule = self.ids.matricule.text.strip()
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT role FROM users WHERE matricule=?", (matricule,))
-            user = c.fetchone()
-        if user and user[0] == 'employee':
-            self.ids.password.opacity = 0
-            self.ids.password.disabled = True
-            self.ids.forgot_password.opacity = 0
-            self.ids.forgot_password.disabled = True
-        else:
-            self.ids.password.opacity = 1
-            self.ids.password.disabled = False
-            self.ids.forgot_password.opacity = 1
-            self.ids.forgot_password.disabled = False
-
     def verify_login(self):
         matricule = self.ids.matricule.text.strip()
-        password = self.ids.password.text.strip()
+        password = self.ids.password.text.strip() if hasattr(self.ids, 'password') else ''
         
+        # Validation des entrées
+        is_valid, error_msg = InputValidator.validate_matricule(matricule)
+        if not is_valid:
+            Logger.log_action(matricule, "Login failed", f"Invalid matricule format: {error_msg}")
+            self.show_error_dialog(error_msg)
+            return
+            
+        if hasattr(self.ids, 'password'):
+            is_valid, error_msg = InputValidator.validate_password(password)
+            if not is_valid:
+                Logger.log_action(matricule, "Login failed", f"Invalid password format: {error_msg}")
+                self.show_error_dialog(error_msg)
+                return
+
+        # Vérifier en base
         with sqlite3.connect(DB_PATH) as conn:
             c = conn.cursor()
             c.execute("SELECT matricule, password, role FROM users WHERE matricule=?", (matricule,))
             user = c.fetchone()
-        
-        if not user or user[2] not in ('employee', 'technician', 'admin'):
+            
+        # Authentification
+        if not user or user[2] not in ('employee','technician'):
+            Logger.log_action(matricule, "Login failed", "Invalid credentials")
             self.show_error_dialog("Identifiants invalides")
             return
-        
-        if user[2] == 'employee':
-            # Skip password verification for employees
-            app = MDApp.get_running_app()
-            app.current_user = {'matricule': user[0], 'role': user[2]}
-            app.reset_timeout()
-            self.manager.current = 'employee_camera'
-            return
-        
-        stored = user[1] or ''
-        if not stored:
-            self.show_error_dialog("Aucun mot de passe défini pour ce compte")
-            return
-        
-        try:
-            ok = bcrypt.verify(password, stored)
-        except ValueError:
-            self.show_error_dialog("Erreur de mot de passe")
-            return
-        
-        if not ok:
-            self.show_error_dialog("Mot de passe incorrect")
-            return
-        
+            
+        if user[2] == 'technician':
+            stored = user[1] or ''
+            try:
+                ok = bcrypt.verify(password, stored)
+            except ValueError:
+                ok = (password == stored)
+                if ok:
+                    # Migration: rehash old plaintext password
+                    new_hash = bcrypt.hash(password)
+                    with sqlite3.connect(DB_PATH) as conn:
+                        c = conn.cursor()
+                        c.execute("UPDATE users SET password=? WHERE matricule=?", (new_hash, matricule))
+                    Logger.log_action(matricule, "Password migrated to bcrypt")
+            if not ok:
+                Logger.log_action(matricule, "Login failed", "Invalid password")
+                self.show_error_dialog("Identifiants invalides")
+                return
+                
         app = MDApp.get_running_app()
         app.current_user = {'matricule': user[0], 'role': user[2]}
         app.reset_timeout()
         
-        if user[2] == 'technician':
+        Logger.log_action(matricule, f"Login successful as {user[2]}")
+        self.show_success_notification(f"Bienvenue {user[0]} !")
+
+        # Naviguer
+        if user[2] == 'employee':
+            self.manager.current = 'employee_camera'
+        else:
             self.manager.current = 'technician_dashboard'
-        else:  # admin
-            self.manager.current = 'admin_dashboard'
-
-    def request_password_reset(self):
-        matricule = self.ids.matricule.text.strip()
-        if not matricule:
-            self.show_error_dialog("Veuillez entrer un matricule")
-            return
-        
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT matricule, role FROM users WHERE matricule=?", (matricule,))
-            user = c.fetchone()
-            if not user:
-                self.show_error_dialog("Matricule invalide")
-                return
-            if user[1] == 'employee':
-                self.show_error_dialog("La réinitialisation de mot de passe n'est pas disponible pour les employés")
-                return
-            
-            # Générer un code temporaire (6 caractères alphanumériques)
-            code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-            expiry = datetime.now() + timedelta(minutes=30)
-            
-            c.execute('''INSERT OR REPLACE INTO reset_codes (matricule, code, expiry_date)
-                        VALUES (?, ?, ?)''', (matricule, code, expiry))
-            conn.commit()
-        
-        # Simuler l'envoi du code via une boîte de dialogue
-        dialog = MDDialog(
-            title="Code de réinitialisation",
-            text=f"Votre code de réinitialisation est : {code}\nValide pendant 30 minutes.",
-            buttons=[MDFlatButton(text="OK", on_release=lambda x: (dialog.dismiss(), setattr(self.manager, 'current', 'reset_password')))]
-        )
-        dialog.open()
-
-class ResetPasswordScreen(BaseScreen):
-    def reset_password(self):
-        matricule = self.ids.matricule.text.strip()
-        code = self.ids.code.text.strip()
-        new_password = self.ids.new_password.text.strip()
-        
-        if not all([matricule, code, new_password]):
-            self.show_error_dialog("Veuillez remplir tous les champs")
-            return
-        
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT role FROM users WHERE matricule=?", (matricule,))
-            user = c.fetchone()
-            if user and user[0] == 'employee':
-                self.show_error_dialog("La réinitialisation de mot de passe n'est pas disponible pour les employés")
-                return
-            
-            c.execute("SELECT code, expiry_date FROM reset_codes WHERE matricule=?", (matricule,))
-            reset_data = c.fetchone()
-            
-            if not reset_data:
-                self.show_error_dialog("Aucun code de réinitialisation trouvé")
-                return
-            
-            stored_code, expiry_date = reset_data
-            if stored_code != code:
-                self.show_error_dialog("Code invalide")
-                return
-            
-            if datetime.strptime(expiry_date, '%Y-%m-%d %H:%M:%S.%f') < datetime.now():
-                self.show_error_dialog("Code expiré")
-                return
-            
-            # Mettre à jour le mot de passe
-            hashed_password = bcrypt.hash(new_password)
-            c.execute("UPDATE users SET password=? WHERE matricule=?", (hashed_password, matricule))
-            c.execute("DELETE FROM reset_codes WHERE matricule=?", (matricule,))
-            conn.commit()
-        
-        Snackbar(
-            text="Mot de passe réinitialisé avec succès",
-            snackbar_x="10dp",
-            snackbar_y="10dp",
-            size_hint_x=(Window.width - (dp(10) * 2)) / Window.width,
-            bg_color=THEME_COLORS['snackbar_success']
-        ).open()
-        self.manager.current = 'login'
 
 class EmployeeCameraScreen(BaseScreen):
     def on_enter(self):
@@ -187,22 +167,25 @@ class EmployeeCameraScreen(BaseScreen):
         self.camera_active = False
         self.preview = Image()
         self.ids.camera_layout.add_widget(self.preview)
-        Clock.schedule_once(self.start_camera, 1)
+        Clock.schedule_once(self.start_camera, 1)  # Délai pour laisser l'interface se charger
 
     def on_leave(self):
         self.stop_camera()
 
     def start_camera(self, dt):
-        for camera_index in range(2):
-            self.capture = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+        # Essayer plusieurs indices de caméra
+        for camera_index in range(2):  # Essayer les caméras 0 et 1
+            self.capture = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)  # Utiliser DirectShow
             if self.capture.isOpened():
+                # Définir une résolution plus basse pour de meilleures performances
                 self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                 self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 self.camera_active = True
-                Clock.schedule_interval(self.update_camera, 1.0 / 15.0)
+                Clock.schedule_interval(self.update_camera, 1.0 / 30.0)
                 return
         
-        self.show_error_dialog("Impossible d'accéder à la caméra. Essayez de sélectionner une image.")
+        # Si aucune caméra n'est trouvée
+        self.show_error_dialog("Impossible d'accéder à la caméra")
 
     def stop_camera(self):
         if self.camera_active:
@@ -215,6 +198,7 @@ class EmployeeCameraScreen(BaseScreen):
         if self.camera_active:
             ret, frame = self.capture.read()
             if ret:
+                # Convertir BGR en RGB
                 buf = cv2.flip(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB), 0).tobytes()
                 texture = Texture.create(size=(frame.shape[1], frame.shape[0]), colorfmt='rgb')
                 texture.blit_buffer(buf, colorfmt='rgb', bufferfmt='ubyte')
@@ -229,43 +213,74 @@ class EmployeeCameraScreen(BaseScreen):
 
         ret, frame = self.capture.read()
         if ret:
-            os.makedirs('assets', exist_ok=True)
+            # Créer le dossier assets s'il n'existe pas
+            if not os.path.exists('assets'):
+                os.makedirs('assets')
+
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             filename = os.path.join('assets', f'alert_{timestamp}.jpg')
+            
+            # Sauvegarder l'image
             cv2.imwrite(filename, frame)
             
             app = MDApp.get_running_app()
             app.current_photo = filename
+            
+            # Logger l'action
+            Logger.log_action(
+                app.current_user['matricule'],
+                "Photo captured",
+                f"Saved as {filename}"
+            )
+            
+            self.show_success_notification("Photo capturée avec succès !")
+            
             self.stop_camera()
             self.manager.current = 'alert_type'
         else:
+            Logger.log_action(
+                MDApp.get_running_app().current_user['matricule'],
+                "Photo capture failed",
+                "Camera error"
+            )
             self.show_error_dialog("Erreur lors de la capture")
 
 class AlertTypeScreen(BaseScreen):
+    anomaly_types = [
+        {'name': 'Bruit', 'icon': 'volume-high', 'description': 'Sons anormaux'},
+        {'name': 'Vibration', 'icon': 'vibrate', 'description': 'Secousses ou tremblements'},
+        {'name': 'Chaleur', 'icon': 'thermometer-high', 'description': 'Température élevée'},
+        {'name': 'Fuite', 'icon': 'water', 'description': 'Fuite de liquide'},
+        {'name': 'Odeur', 'icon': 'scent', 'description': 'Odeur inhabituelle'},
+        {'name': 'Coupure', 'icon': 'power-plug-off', 'description': 'Arrêt ou coupure'},
+        {'name': 'Usure', 'icon': 'cog-off', 'description': 'Usure anormale'},
+        {'name': 'Déformation', 'icon': 'shape', 'description': 'Déformation visible'},
+        {'name': 'Autre', 'icon': 'help-circle', 'description': 'Autre problème'}
+    ]
+    
     def on_enter(self):
+        # Nettoyer la grille existante
         grid = self.ids.type_grid
         grid.clear_widgets()
         
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT name, description, icon_name FROM anomaly_types")
-            anomaly_types = c.fetchall()
-        
-        for name, description, icon_name in anomaly_types:
-            self.add_type_card({'name': name, 'description': description, 'icon': icon_name})
-
+        # Ajouter les cartes pour chaque type d'anomalie
+        for anomaly in self.anomaly_types:
+            self.add_type_card(anomaly)
+    
     def add_type_card(self, anomaly):
+        # Création de la carte
         card = MDCard(
             orientation='vertical',
             size_hint_y=None,
             height=dp(200),
-            md_bg_color=THEME_COLORS['card_background'],
+            md_bg_color=get_color_from_hex('#424242'),
             radius=[dp(10)],
             elevation=3,
             padding=dp(10),
             spacing=dp(5)
         )
         
+        # Icône de l'anomalie
         icon_box = MDBoxLayout(
             orientation='vertical',
             size_hint=(1, None),
@@ -283,8 +298,8 @@ class AlertTypeScreen(BaseScreen):
         )
         
         icon_box.add_widget(icon)
-        card.add_widget(icon_box)
         
+        # Nom de l'anomalie
         name_label = MDLabel(
             text=anomaly['name'],
             halign='center',
@@ -292,6 +307,8 @@ class AlertTypeScreen(BaseScreen):
             size_hint_y=None,
             height=dp(30)
         )
+        
+        # Description de l'anomalie
         desc_label = MDLabel(
             text=anomaly['description'],
             halign='center',
@@ -301,93 +318,63 @@ class AlertTypeScreen(BaseScreen):
             height=dp(20)
         )
         
+        # Assemblage de la carte
+        card.add_widget(icon_box)
         card.add_widget(name_label)
         card.add_widget(desc_label)
+        
+        # Ajout du comportement tactile
         card.bind(on_release=lambda x, name=anomaly['name']: self.select_type(name))
+        
+        # Ajout de la carte à la grille
         self.ids.type_grid.add_widget(card)
-
+    
     def select_type(self, type_name):
         app = MDApp.get_running_app()
         if self.check_daily_alert():
             self.show_error_dialog("Vous avez déjà envoyé une alerte aujourd'hui")
             return
+            
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
         
-        app.current_alert_type = type_name
-        self.manager.current = 'alert_description'
-
+        c.execute('''INSERT INTO alerts 
+                    (user_matricule, photo_path, alert_type, send_date, status)
+                    VALUES (?, ?, ?, ?, ?)''',
+                 (app.current_user['matricule'],
+                  app.current_photo,
+                  type_name,
+                  datetime.now(),
+                  'En attente'))
+                  
+        conn.commit()
+        conn.close()
+        
+        self.manager.current = 'alert_status'
+    
     def check_daily_alert(self):
         app = MDApp.get_running_app()
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        today = datetime.now().strftime('%Y-%m-%d')
+        today = datetime.now().date()
         c.execute('''SELECT COUNT(*) FROM alerts 
                     WHERE user_matricule=? 
-                    AND strftime('%Y-%m-%d', send_date)=?''',
+                    AND date(send_date)=date(?)''',
                  (app.current_user['matricule'], today))
                  
         count = c.fetchone()[0]
         conn.close()
         return count > 0
 
-class AlertDescriptionScreen(BaseScreen):
-    def submit_alert(self):
-        app = MDApp.get_running_app()
-        description = self.ids.description.text.strip()
-        
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute('''INSERT INTO alerts 
-                        (user_matricule, photo_path, alert_type, description, send_date, status)
-                        VALUES (?, ?, ?, ?, ?, ?)''',
-                     (app.current_user['matricule'],
-                      app.current_photo,
-                      app.current_alert_type,
-                      description,
-                      datetime.now(),
-                      'En attente'))
-            conn.commit()
-        
-        # Envoyer une notification aux techniciens
-        notification.notify(
-            title="Nouvelle alerte",
-            message=f"Nouvelle alerte de type {app.current_alert_type} par {app.current_user['matricule']}",
-            app_name="SAMEs"
-        )
-        
-        # Planifier une notification de rappel pour les techniciens
-        self.schedule_reminder(app.current_alert_type, app.current_user['matricule'])
-        
-        self.manager.current = 'alert_status'
-
-    def schedule_reminder(self, alert_type, matricule):
-        # Planifier une notification après 24 heures si l'alerte n'est pas traitée
-        def check_pending_alert(dt):
-            with sqlite3.connect(DB_PATH) as conn:
-                c = conn.cursor()
-                c.execute('''SELECT status FROM alerts 
-                            WHERE user_matricule=? AND alert_type=? 
-                            AND status='En attente'
-                            ORDER BY send_date DESC LIMIT 1''',
-                         (matricule, alert_type))
-                status = c.fetchone()
-                if status and status[0] == 'En attente':
-                    notification.notify(
-                        title="Alerte en attente",
-                        message=f"L'alerte de type {alert_type} par {matricule} attend toujours une action.",
-                        app_name="SAMEs"
-                    )
-        
-        Clock.schedule_once(check_pending_alert, 24 * 3600)  # 24 heures
-
 class AlertStatusScreen(BaseScreen):
     def on_enter(self):
         self.update_status()
-        Clock.schedule_interval(self.update_status, 30)
-
+        Clock.schedule_interval(self.update_status, 30)  # Update every 30 seconds
+    
     def on_leave(self):
         Clock.unschedule(self.update_status)
-
+    
     def update_status(self, *args):
         app = MDApp.get_running_app()
         conn = sqlite3.connect(DB_PATH)
@@ -403,166 +390,50 @@ class AlertStatusScreen(BaseScreen):
         
         if status:
             self.ids.status_label.text = f"Statut: {status[0]}"
-            status_info = STATUS_CONFIG.get(status[0], {'icon': 'help', 'color': (0.5, 0.5, 0.5, 1)})
-            self.ids.status_icon.icon = status_info['icon']
-            self.ids.status_icon.text_color = status_info['color']
-
-class AlertHistoryScreen(BaseScreen):
-    def on_enter(self):
-        self.load_history()
-
-    def load_history(self, filter_type='', sort_by='send_date DESC'):
-        app = MDApp.get_running_app()
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        query = '''SELECT id, alert_type, send_date, status, photo_path 
-                  FROM alerts 
-                  WHERE user_matricule=?'''
-        params = [app.current_user['matricule']]
-        
-        if filter_type:
-            query += " AND alert_type=?"
-            params.append(filter_type)
-        
-        query += f" ORDER BY {sort_by} LIMIT 50"
-        
-        c.execute(query, params)
-        alerts = c.fetchall()
-        conn.close()
-        
-        self.ids.history_grid.clear_widgets()
-        for alert in alerts:
-            self.add_history_card(alert)
-
-    def add_history_card(self, alert):
-        alert_id, alert_type, send_date, status, photo_path = alert
-        card = MDCard(
-            orientation='horizontal',
-            size_hint_y=None,
-            height=dp(100),
-            md_bg_color=THEME_COLORS['card_background'],
-            radius=[dp(10)],
-            elevation=3,
-            padding=dp(10)
-        )
-        
-        icon = MDIconButton(
-            icon=STATUS_CONFIG.get(status, {'icon': 'help'})['icon'],
-            theme_icon_color="Custom",
-            icon_color=STATUS_CONFIG.get(status, {'color': (0.5, 0.5, 0.5, 1)})['color']
-        )
-        
-        content = MDBoxLayout(
-            orientation='vertical',
-            spacing=dp(5)
-        )
-        content.add_widget(MDLabel(
-            text=f"{alert_type} - {send_date.split('.')[0]}",
-            theme_text_color="Primary"
-        ))
-        content.add_widget(MDLabel(
-            text=f"Statut: {status}",
-            theme_text_color="Secondary"
-        ))
-        
-        card.add_widget(icon)
-        card.add_widget(content)
-        card.bind(on_release=lambda x, path=photo_path: self.show_image_popup(path))
-        self.ids.history_grid.add_widget(card)
-
-    def show_image_popup(self, photo_path):
-        if not photo_path or not os.path.exists(photo_path):
-            self.show_error_dialog("Image non disponible")
-            return
-        
-        image_widget = Image(source=photo_path, size_hint=(1, None), height=dp(350))
-        dialog = MDDialog(
-            title="Photo de l'anomalie",
-            type="custom",
-            content_cls=image_widget,
-            size_hint=(0.8, None),
-            height=dp(420)
-        )
-        dialog.open()
-
-    def show_filter_menu(self):
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT name FROM anomaly_types")
-            types = [row[0] for row in c.fetchall()]
-        
-        menu_items = [
-            {"text": "Tous", "on_release": lambda: self.apply_filters("")}
-        ] + [{"text": t, "on_release": lambda t=t: self.apply_filters(t)} for t in types]
-        
-        self.filter_menu = MDDropdownMenu(
-            caller=self.ids.history_grid,
-            items=menu_items,
-            width_mult=4
-        )
-        self.filter_menu.open()
-
-    def show_sort_menu(self):
-        menu_items = [
-            {"text": "Date (récent)", "on_release": lambda: self.apply_filters(self.ids.filter_type.text, "send_date DESC")},
-            {"text": "Date (ancien)", "on_release": lambda: self.apply_filters(self.ids.filter_type.text, "send_date ASC")},
-            {"text": "Statut", "on_release": lambda: self.apply_filters(self.ids.filter_type.text, "status ASC")}
-        ]
-        self.sort_menu = MDDropdownMenu(
-            caller=self.ids.history_grid,
-            items=menu_items,
-            width_mult=4
-        )
-        self.sort_menu.open()
-
-    def apply_filters(self, filter_type=None, sort_by='send_date DESC'):
-        if filter_type is None:
-            filter_type = self.ids.filter_type.text.strip()
-        self.load_history(filter_type, sort_by)
 
 class TechnicianDashboardScreen(BaseScreen):
     def on_enter(self):
         self.load_alerts()
-
-    def load_alerts(self, filter_type='', sort_by='send_date DESC'):
+    
+    def load_alerts(self):
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         
-        query = '''SELECT a.*, t.icon_name 
-                  FROM alerts a 
-                  JOIN anomaly_types t ON a.alert_type = t.name
-                  WHERE a.status='En attente' '''
-        params = []
-        
-        if filter_type:
-            query += " AND a.alert_type=?"
-            params.append(filter_type)
-        
-        query += f" ORDER BY {sort_by} LIMIT 20"
-        
-        c.execute(query, params)
+        c.execute('''SELECT * FROM alerts 
+                    WHERE status='En attente'
+                    ORDER BY send_date DESC''')
+                    
         alerts = c.fetchall()
         conn.close()
         
+        # Update UI with alerts
         self.ids.alerts_grid.clear_widgets()
         for alert in alerts:
             self.add_alert_card(alert)
 
     def add_alert_card(self, alert):
         app = MDApp.get_running_app()
-        alert_id, user_matricule, photo_path, alert_type, description, send_date, validation_date, status, comment, technician_id, icon_name = alert
+        # Sécurité sur les champs
+        alert_id = alert[0]
+        user_matricule = alert[1] if alert[1] else "?"
+        photo_path = alert[2]
+        alert_type = alert[3] if alert[3] else "?"
+        send_date = alert[4].split('.')[0] if alert[4] else "?"
+        status = alert[5] if alert[5] else "En attente"
+        comment = alert[6] if len(alert) > 6 and alert[6] else None
         
+        # Création de la carte
         card = MDCard(
             orientation='vertical',
             size_hint_y=None,
             height=dp(420),
-            md_bg_color=THEME_COLORS['card_background'],
+            md_bg_color=get_color_from_hex('#424242'),
             radius=[dp(10)],
             elevation=3,
             padding=dp(10)
         )
 
+        # En-tête avec l'ID et la date
         header = MDBoxLayout(
             orientation='horizontal',
             size_hint_y=None,
@@ -573,12 +444,14 @@ class TechnicianDashboardScreen(BaseScreen):
             theme_text_color="Primary",
             font_style="H6"
         ))
-        header.add_widget(MDLabel(
-            text=send_date.split('.')[0],
+        date_label = MDLabel(
+            text=send_date,
             theme_text_color="Secondary",
             halign='right'
-        ))
+        )
+        header.add_widget(date_label)
 
+        # Contenu principal
         content = MDBoxLayout(
             orientation='vertical',
             spacing=dp(10),
@@ -586,16 +459,16 @@ class TechnicianDashboardScreen(BaseScreen):
             size_hint_y=None,
             height=dp(220)
         )
-        
+        # Type d'anomalie avec icône
         type_box = MDBoxLayout(
             orientation='horizontal',
             size_hint_y=None,
             height=dp(40)
         )
         icon = MDIconButton(
-            icon=icon_name or 'help-circle',
-            theme_icon_color="Custom",
-            icon_color=app.theme_cls.primary_color
+            icon=self.get_alert_icon(alert_type),
+            theme_text_color="Custom",
+            text_color=app.theme_cls.primary_color
         )
         type_box.add_widget(icon)
         type_box.add_widget(MDLabel(
@@ -603,30 +476,30 @@ class TechnicianDashboardScreen(BaseScreen):
             theme_text_color="Primary"
         ))
         content.add_widget(type_box)
-        
-        content.add_widget(MDBoxLayout(size_hint_y=None, height=dp(1), md_bg_color=THEME_COLORS['separator']))
-        
+        # Séparateur
+        content.add_widget(MDBoxLayout(size_hint_y=None, height=dp(1), md_bg_color=get_color_from_hex('#666666'), padding=[dp(10), 0]))
+        # Status avec couleur
+        status_colors = {
+            'Validé': (0, 1, 0, 1),
+            'Rejeté': (1, 0, 0, 1),
+            'En attente': app.theme_cls.primary_color
+        }
+        status_color = status_colors.get(status, app.theme_cls.primary_color)
         status_label = MDLabel(
             text=f"Statut: {status}",
             theme_text_color="Custom",
-            text_color=STATUS_CONFIG.get(status, {'color': app.theme_cls.primary_color})['color'],
+            text_color=status_color,
             font_style="Subtitle2"
         )
         content.add_widget(status_label)
-        
+        # Employé
         content.add_widget(MDLabel(
-            text=f"Employé: {user_matricule or '?'}",
+            text=f"Employé: {user_matricule}",
             theme_text_color="Secondary"
         ))
-        
-        if description:
-            content.add_widget(MDLabel(
-                text=f"Description: {description}",
-                theme_text_color="Secondary"
-            ))
-        
-        content.add_widget(MDBoxLayout(size_hint_y=None, height=dp(1), md_bg_color=THEME_COLORS['separator']))
-        
+        # Séparateur
+        content.add_widget(MDBoxLayout(size_hint_y=None, height=dp(1), md_bg_color=get_color_from_hex('#666666'), padding=[dp(10), 0]))
+        # Commentaire (si présent)
         if comment:
             comment_box = MDBoxLayout(
                 orientation='vertical',
@@ -648,14 +521,14 @@ class TechnicianDashboardScreen(BaseScreen):
                 height=dp(60)
             ))
             content.add_widget(comment_box)
-        
+        # Bouton pour voir l'image de l'anomalie
         image_button = MDFillRoundFlatIconButton(
             text="Voir l'image",
             icon="image",
             on_release=lambda x, path=photo_path: self.show_image_popup(path)
         )
         content.add_widget(image_button)
-        
+        # Boutons d'action
         buttons = MDBoxLayout(
             orientation='horizontal',
             size_hint_y=None,
@@ -679,71 +552,39 @@ class TechnicianDashboardScreen(BaseScreen):
             )
             buttons.add_widget(validate_button)
             buttons.add_widget(reject_button)
-        
-        filters = MDBoxLayout(
-            orientation='horizontal',
-            size_hint_y=None,
-            height=dp(48),
-            spacing=dp(10),
-            padding=[dp(10), 0]
-        )
-        filter_button = MDFillRoundFlatIconButton(
-            text="Filtrer",
-            icon="filter",
-            on_release=lambda x: self.show_filter_menu()
-        )
-        filters.add_widget(filter_button)
-        
-        card.add_widget(filters)
+        # Assemblage final de la carte
         card.add_widget(header)
-        card.add_widget(MDBoxLayout(size_hint_y=None, height=dp(1), md_bg_color=THEME_COLORS['separator']))
+        card.add_widget(MDBoxLayout(size_hint_y=None, height=dp(1), md_bg_color=get_color_from_hex('#666666'), padding=[dp(10), 0]))
         card.add_widget(content)
         if status == 'En attente':
-            card.add_widget(MDBoxLayout(size_hint_y=None, height=dp(1), md_bg_color=THEME_COLORS['separator']))
+            card.add_widget(MDBoxLayout(size_hint_y=None, height=dp(1), md_bg_color=get_color_from_hex('#666666'), padding=[dp(10), 0]))
             card.add_widget(buttons)
         self.ids.alerts_grid.add_widget(card)
-
-    def show_filter_menu(self):
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("SELECT name FROM anomaly_types")
-            types = [row[0] for row in c.fetchall()]
-        
-        menu_items = [
-            {"text": "Tous", "on_release": lambda: self.apply_filters("")}
-        ] + [{"text": t, "on_release": lambda t=t: self.apply_filters(t)} for t in types]
-        
-        self.filter_menu = MDDropdownMenu(
-            caller=self.ids.alerts_grid,
-            items=menu_items,
-            width_mult=4
-        )
-        self.filter_menu.open()
-
-    def show_sort_menu(self):
-        menu_items = [
-            {"text": "Date (récent)", "on_release": lambda: self.apply_filters(self.ids.filter_type.text, "send_date DESC")},
-            {"text": "Date (ancien)", "on_release": lambda: self.apply_filters(self.ids.filter_type.text, "send_date ASC")},
-            {"text": "Statut", "on_release": lambda: self.apply_filters(self.ids.filter_type.text, "status ASC")}
-        ]
-        self.sort_menu = MDDropdownMenu(
-            caller=self.ids.alerts_grid,
-            items=menu_items,
-            width_mult=4
-        )
-        self.sort_menu.open()
-
-    def apply_filters(self, filter_type=None, sort_by='send_date DESC'):
-        if filter_type is None:
-            filter_type = self.ids.filter_type.text.strip()
-        self.load_alerts(filter_type, sort_by)
+    
+    def get_alert_icon(self, alert_type):
+        icons = {
+            'Fuite': 'water',
+            'Usure': 'wrench',
+            'Déformation': 'alert-octagon'
+        }
+        return icons.get(alert_type, 'help-circle')
 
     def show_image_popup(self, photo_path):
+        from kivymd.uix.dialog import MDDialog
+        from kivy.uix.image import Image
+        from kivy.metrics import dp
+        import os
+        app = MDApp.get_running_app()
         if not photo_path or not os.path.exists(photo_path):
-            self.show_error_dialog("Image non disponible ou fichier manquant")
+            dialog = MDDialog(
+                title="Image non disponible",
+                text="Aucune image n'est associée à cette alerte ou le fichier est manquant.",
+                size_hint=(0.8, None),
+                height=dp(200)
+            )
+            dialog.open()
             return
-        
-        image_widget = Image(source=photo_path, size_hint=(1, None), height=dp(350))
+        image_widget = Image(source=photo_path, allow_stretch=True, keep_ratio=True, size_hint=(1, None), height=dp(350))
         dialog = MDDialog(
             title="Photo de l'anomalie",
             type="custom",
@@ -810,22 +651,23 @@ class TechnicianDashboardScreen(BaseScreen):
         
         cursor.execute("""
             UPDATE alerts 
-            SET status = ?, comment = ?, technician_id = ?, validation_date = ?
+            SET status = ?, comment = ?, technician_id = ?
             WHERE id = ?
-        """, (status, comment, app.current_user['matricule'], datetime.now(), alert_id))
+        """, (status, comment, app.current_user['matricule'], alert_id))
         
         conn.commit()
         conn.close()
         
         dialog.dismiss()
-        self.load_alerts()
+        self.load_alerts()  # Rafraîchir la liste des alertes
         
+        # Afficher un snackbar de confirmation
         Snackbar(
             text=f"Alerte {status.lower()} avec succès",
             snackbar_x="10dp",
             snackbar_y="10dp",
             size_hint_x=(Window.width - (dp(10) * 2)) / Window.width,
-            bg_color=THEME_COLORS['snackbar_success'] if action == 'validate' else THEME_COLORS['snackbar_error']
+            bg_color=get_color_from_hex('#4CAF50') if action == 'validate' else get_color_from_hex('#F44336')
         ).open()
 
     def validate_alert(self, alert_id):
@@ -834,84 +676,63 @@ class TechnicianDashboardScreen(BaseScreen):
     def reject_alert(self, alert_id):
         self.show_comment_dialog(alert_id, 'reject')
 
-class AdminDashboardScreen(BaseScreen):
-    def on_enter(self):
-        self.load_users()
-
-    def load_users(self):
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute("SELECT matricule, role FROM users ORDER BY matricule")
-        users = c.fetchall()
-        conn.close()
-        
-        self.ids.users_grid.clear_widgets()
-        for user in users:
-            self.add_user_card(user)
-
-    def add_user_card(self, user):
-        matricule, role = user
-        card = MDCard(
-            orientation='horizontal',
-            size_hint_y=None,
-            height=dp(80),
-            md_bg_color=THEME_COLORS['card_background'],
-            radius=[dp(10)],
-            elevation=3,
-            padding=dp(10)
-        )
-        
-        content = MDBoxLayout(
-            orientation='vertical',
-            spacing=dp(5)
-        )
-        content.add_widget(MDLabel(
-            text=f"Matricule: {matricule}",
-            theme_text_color="Primary"
-        ))
-        content.add_widget(MDLabel(
-            text=f"Rôle: {role}",
-            theme_text_color="Secondary"
-        ))
-        
-        card.add_widget(content)
-        self.ids.users_grid.add_widget(card)
-
 class SAMEsApp(MDApp):
     def build(self):
-        self.kv_file = None  # Prevent multiple loading of sames.kv
+        # Configuration du thème
         self.theme_cls.primary_palette = "Blue"
         self.theme_cls.primary_hue = "500"
         self.theme_cls.accent_palette = "Amber"
         self.theme_cls.theme_style = "Light"
-        self.theme_cls.material_style = "M3"
+        self.theme_cls.material_style = "M3"  # Material Design 3
         
+        # Configuration de la fenêtre
         Window.softinput_mode = "below_target"
-        Window.size = (400, 700)
+        Window.size = (400, 700)  # Taille mobile standard
         
+        # Initialize database
         init_db()
+        
+        # Load KV file
         return Builder.load_file('sames.kv')
-
+    
     def on_start(self):
         self.timeout = None
         self.current_user = None
         self.current_photo = None
-        self.current_alert_type = None
-
+        
+        # Charger les ressources
+        self.load_status_icons()
+    
+    def load_status_icons(self):
+        self.status_icons = {
+            'En attente': {'icon': 'clock-outline', 'color': (1, 0.8, 0, 1)},  # Jaune
+            'Vérifiée': {'icon': 'check-circle-outline', 'color': (0, 0.7, 0, 1)},  # Vert
+            'Transmise à maintenance': {'icon': 'progress-wrench', 'color': (0, 0.5, 1, 1)},  # Bleu
+            'Rejetée': {'icon': 'close-circle-outline', 'color': (0.8, 0, 0, 1)},  # Rouge
+            'Traitée': {'icon': 'check-circle', 'color': (0, 0.8, 0, 1)}  # Vert foncé
+        }
+    
+    def get_status_info(self, status):
+        return self.status_icons.get(status, {'icon': 'help', 'color': (0.5, 0.5, 0.5, 1)})
+    
     def reset_timeout(self):
         if self.timeout:
             Clock.unschedule(self.timeout)
-        self.timeout = Clock.schedule_once(self.logout, 120)
-
+        self.timeout = Clock.schedule_once(self.logout, 120)  # 2 minutes
+    
     def logout(self, *args):
         self.current_user = None
         self.current_photo = None
-        self.current_alert_type = None
         self.root.transition.direction = 'right'
         self.root.current = 'login'
-
-    def toggle_theme(self):
-        self.theme_cls.theme_style = "Dark" if self.theme_cls.theme_style == "Light" else "Light"
+    
+    def toggle_nav_drawer(self, *args):
+        try:
+            nav_drawer = self.root.get_screen('technician_dashboard').ids.get('nav_drawer', None)
+            if nav_drawer:
+                nav_drawer.set_state('toggle')
+        except Exception as e:
+            print(f"Erreur lors de l'ouverture du menu latéral : {e}")
 
 if __name__ == '__main__':
     SAMEsApp().run()

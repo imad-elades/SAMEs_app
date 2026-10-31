@@ -1,0 +1,42 @@
+# ==============================================================================
+#  Gitignore - SAMEs (Système d'Alerte de Maintenance par l'Employé)
+# ==============================================================================
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# Virtual Environments (DO NOT COMMIT)
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# Large local video files (> 100 MB not supported by standard GitHub push)
+Presentation_finale_SAME.pptx
+*Full.pptx
+*.mp4
+
+# SQLite runtime locks
+*.db-journal
+*.sqlite3-journal
+
+# Operating System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+[Dd]esktop.ini
+
+# IDEs and Code Editors
+.idea/
+.vscode/
+*.swp
+*.swo
